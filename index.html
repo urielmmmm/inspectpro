@@ -34,6 +34,32 @@ function sbOnAuthChange(callback){
   });
 }
 
+// ─── EDGE FUNCTIONS ───────────────────────────────────────────────────────────
+const EF_FORM="https://qyybvtskegnggfdjhzjq.supabase.co/functions/v1/upload-form";
+const EF_TEMP="https://qyybvtskegnggfdjhzjq.supabase.co/functions/v1/upload-temperatures";
+
+async function getToken(){const{data:{session}}=await sb.auth.getSession();return session?.access_token||null;}
+
+async function uploadFormOdoo(record,html){
+  try{
+    const t=await getToken();if(!t)return;
+    const r=await fetch(EF_FORM,{method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+t},body:JSON.stringify({htmlContent:html,record})});
+    const d=await r.json();
+    if(d.ok)console.log("✅ Subido a Odoo:",d.fileName);
+    else console.warn("⚠️ Odoo:",d.error);
+  }catch(e){console.error("uploadForm:",e.message);}
+}
+
+async function uploadTempOdoo(html,yearMonth,area){
+  try{
+    const t=await getToken();if(!t)return;
+    const r=await fetch(EF_TEMP,{method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+t},body:JSON.stringify({htmlContent:html,yearMonth,area})});
+    const d=await r.json();
+    if(d.ok)console.log("✅ Temperaturas subidas a Odoo:",d.fileName);
+    else console.warn("⚠️ Odoo:",d.error);
+  }catch(e){console.error("uploadTemp:",e.message);}
+}
+
 async function sbSave(rec){try{const{error}=await sb.from("registros").upsert({id:rec.id,form_key:rec.formKey,area:rec.area,title:rec.title,inspector:rec.inspector,inspector_id:rec.inspectorId,inspector_puesto:rec.inspectorPuesto,fecha:rec.fecha,values:rec.values,fields:rec.fields,score:rec.score,selected_section:rec.selectedSection,notas:rec.notas,created_at:rec.createdAt});if(error)console.error(error.message);}catch(e){console.error(e);}}
 async function sbDel(id){try{await sb.from("registros").delete().eq("id",id);}catch(e){console.error(e);}}
 async function sbLoad(){try{const{data}=await sb.from("registros").select("*").order("created_at",{ascending:false});return(data||[]).map(r=>({id:r.id,formKey:r.form_key,area:r.area,title:r.title,inspector:r.inspector,inspectorId:r.inspector_id,inspectorPuesto:r.inspector_puesto,fecha:r.fecha,values:r.values,fields:r.fields,score:r.score,selectedSection:r.selected_section,notas:r.notas,createdAt:r.created_at}));}catch(e){return[];}}
@@ -269,8 +295,24 @@ function App(){
   const score=calcScore(fields,vals);
   const OPT=["Consome y/o Salsa","Frascos y Tapas"];
   function calcVS(){if(fk!=="recepcion")return score;const ag=getGrp(fields),mf=Object.entries(ag).filter(([gn])=>!OPT.includes(gn)).flatMap(([,gf])=>gf),of=secSel?(ag[secSel==="consome"?"Consome y/o Salsa":"Frascos y Tapas"]||[]):[];return calcScore([...mf,...of],vals);}
-  async function submit(){const vs=calcVS(),inspD=getI(insp);let sF=fields,sV={...vals};if(fk==="recepcion"){const agN=secSel==="consome"?"Consome y/o Salsa":secSel==="frascos"?"Frascos y Tapas":null;sF=fields.filter(f=>!f.group||!OPT.includes(f.group)||(f.group===agN));fields.filter(f=>f.group&&OPT.includes(f.group)&&f.group!==agN).forEach(f=>{delete sV[f.key+"_check"];delete sV[f.key+"_val"];});}const rec={id:genId(),formKey:fk,area:fd.area,title:fd.title,inspector:inspD.name,inspectorId:insp,inspectorPuesto:inspD.puesto,fecha,values:sV,fields:sF,score:vs,selectedSection:secSel,notas,createdAt:new Date().toISOString()};await sbSave(rec);setSubmitted(true);setTimeout(()=>{setSubmitted(false);setFView("history");setVals(initV(fk));setNotas("");},1500);}
-  async function delRec(id,iName){if(getI(user).name!==iName){alert("Solo "+iName+" puede eliminar este registro.");return;}await sbDel(id);setFView("history");}
+  async function submit(){const vs=calcVS(),inspD=getI(insp);let sF=fields,sV={...vals};if(fk==="recepcion"){const agN=secSel==="consome"?"Consome y/o Salsa":secSel==="frascos"?"Frascos y Tapas":null;sF=fields.filter(f=>!f.group||!OPT.includes(f.group)||(f.group===agN));fields.filter(f=>f.group&&OPT.includes(f.group)&&f.group!==agN).forEach(f=>{delete sV[f.key+"_check"];delete sV[f.key+"_val"];});}const rec={id:genId(),formKey:fk,area:fd.area,title:fd.title,inspector:inspD.name,inspectorId:insp,inspectorPuesto:inspD.puesto,fecha,values:sV,fields:sF,score:vs,selectedSection:secSel,notas,createdAt:new Date().toISOString()};await sbSave(rec);setRecs(prev=>[rec,...prev.filter(r=>r.id!==rec.id)]);setTimeout(()=>genAndUpload(rec),500);setSubmitted(true);setTimeout(()=>{setSubmitted(false);setFView("history");setVals(initV(fk));setNotas("");},1500);}
+  async function delRec(id,iName){if(getI(user).name!==iName){alert("Solo "+iName+" puede eliminar este registro.");return;}await sbDel(id);setRecs(prev=>prev.filter(r=>r.id!==id));setFView("history");}
+
+  async function genAndUpload(rec){
+    try{
+      const aF=rec.fields||[],cF=aF.filter(f=>f.type==="check"||f.type==="check_with_input"||f.type==="check_bi");
+      const cGr={};cF.forEach(f=>{const g=f.group||"Lista de verificación";if(!cGr[g])cGr[g]=[];cGr[g].push(f);});
+      const app=rec.score?rec.score.total-(rec.score.na||0):0,pct=rec.score?(app===0?100:Math.round((rec.score.pass/app)*100)):null;
+      const sc=pct===null?"#6366f1":pct>=80?"#16a34a":pct>=50?"#d97706":"#dc2626";
+      const sl=pct===null?"REGISTRADO":pct>=80?"APROBADO":pct>=50?"OBSERVACIONES":"REPROBADO";
+      const fV=v=>v===true?"CUMPLE":v==="na"?"N/A":v===false?"NO CUMPLE":"—";
+      const cV=v=>v===true?"#166534":v==="na"?"#3730a3":v===false?"#991b1b":"#666";
+      const bV=v=>v===true?"#f0fdf4":v==="na"?"#eef2ff":v===false?"#fef2f2":"#f9f9f9";
+      const gS=Object.entries(cGr).map(([gn,gf])=>`<div style="margin-bottom:12px"><div style="background:#1a1a1a;color:#f59e0b;padding:5px 10px;font-size:9px;font-weight:700;text-transform:uppercase">${gn}</div>${gf.map((f,i)=>{const val=rec.values[f.key+"_check"],ival=rec.values[f.key+"_val"];return`<div style="display:flex;justify-content:space-between;padding:5px 10px;background:${bV(val)};border-bottom:1px solid #e5e7eb"><span style="font-size:10px;flex:1">${i+1}. ${f.label}${ival?` (${ival}${f.inputType!=="date"?" °C":""})`:""}</span><span style="font-size:9px;font-weight:700;color:${cV(val)};border:1px solid ${cV(val)};border-radius:3px;padding:1px 5px">${fV(val)}</span></div>`;}).join("")}</div>`).join("");
+      const html=`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${rec.title}</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;padding:20px;color:#111}</style></head><body><div style="background:#1a1a1a;color:#fff;padding:12px 16px;border-radius:6px;margin-bottom:12px;border-left:4px solid #f59e0b"><div style="font-size:9px;color:#f59e0b;margin-bottom:2px">⬡ INSPECTPRO</div><div style="font-size:14px;font-weight:700">${rec.title} — ${rec.area}</div></div><div style="display:flex;gap:8px;margin-bottom:12px"><div style="background:#f9f9f9;border:1px solid #eee;border-radius:4px;padding:7px 10px;flex:1"><div style="font-size:8px;color:#888;text-transform:uppercase">Inspector</div><div style="font-size:12px;font-weight:600">${rec.inspector}</div></div><div style="background:#f9f9f9;border:1px solid #eee;border-radius:4px;padding:7px 10px;flex:1"><div style="font-size:8px;color:#888;text-transform:uppercase">Fecha</div><div style="font-size:12px;font-weight:600">${rec.fecha}</div></div>${rec.score?`<div style="background:${sc}15;border:1px solid ${sc}55;border-radius:4px;padding:7px 10px;flex:1;text-align:center"><div style="font-size:18px;font-weight:700;color:${sc}">${pct}%</div><div style="font-size:8px;color:${sc}">${sl}</div></div>`:""}</div>${gS}${rec.notas?`<div style="margin-top:12px;padding:8px;border:1px solid #eee;border-radius:4px"><div style="font-size:8px;color:#888;text-transform:uppercase;margin-bottom:4px">Observaciones</div><div style="font-size:11px;color:#444">${rec.notas}</div></div>`:""}</body></html>`;
+      await uploadFormOdoo(rec, html);
+    }catch(e){console.error("genAndUpload:",e.message);}
+  }
 
   async function doLogin(){
     if(!loginEmail||!loginPass){setLoginErr("Ingresa tu correo y contraseña");return;}
